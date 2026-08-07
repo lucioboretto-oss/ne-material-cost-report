@@ -303,7 +303,7 @@ print(f'  Excluded: {sorted(all_exc)}')
 # ── STEP 6 — Products & prices ────────────────────────────────────────────────
 print('Step 6: Product prices...')
 all_pids = list({
-    m['product_id']
+    unwrap(m['product_id'])
     for m in rti_moves + int_pool + ep_ml_raw
     if unwrap(m.get('product_id'))
 })
