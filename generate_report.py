@@ -303,7 +303,107 @@ print(f'  Excluded: {sorted(all_exc)}')
 # ── STEP 6 — Products & prices ────────────────────────────────────────────────
 print('Step 6: Product prices...')
 all_pids = list({
-                  default_code=pr.get('default_code','?') or '?',
+    m['product_id']
+    for m in rti_moves + int_pool + ep_ml_raw
+    if unwrap(m.get('product_id'))
+})
+
+products = {}
+for p in sr_batched('product.product', 'id', all_pids,
+                    ['id', 'default_code', 'name', 'standard_price']):
+    products[p['id']] = p
+
+print(f'  {len(products)} products')
+
+# ── Processing ────────────────────────────────────────────────────────────────
+ibl = {}  # lot_id → [INT pool moves]
+for m in int_pool:
+    ibl.setdefault(m['lot_id'], []).append(m)
+
+def proc_rti(rti_list, year):
+    rows = []
+    for pk in rti_list:
+        pn = pk['picking_name']
+        so = pk['origin'].strip()
+        rd = pdate(pk['date_done'])
+        rs = pk['location_id']
+        if pn in all_exc: continue
+        cls = []
+        for mv in pk['moves']:
+            pid = mv['product_id']; lid = mv['lot_id']; qty = mv['qty_done']
+            pr  = products.get(pid, {}); nm = pr.get('name', '')
+            p   = get_price(pid)
+            if is_eng_tool(nm) or not p: continue
+            cl = dict(picking='', product_id=pid, product_name=nm,
+                      default_code=pr.get('default_code','?') or '?',
+                      lot=mv['lot_name'], qty=qty, unit_price=p,
+                      line_cost=round(qty*p, 4), location_origin='WH/IM/Stock')
+            if rs in STOCK_LOCS:
+                cl['picking'] = 'RTI (direct stock)'; cls.append(cl)
+            elif lid and lid in ibl and rd:
+                cs = [m for m in ibl[lid]
+                      if pdate(m['date']) and pdate(m['date']) <= rd
+                      and (rd - pdate(m['date'])).total_seconds() <= 48*3600]
+                if cs:
+                    b = max(cs, key=lambda m: pdate(m['date']))
+                    bn = ip_pk_names.get(b['picking_id'], b.get('picking_name','INT'))
+                    if bn not in all_exc:
+                        cl['picking'] = bn; cls.append(cl)
+        tot = round(sum(c['line_cost'] for c in cls), 2)
+        ct  = ('direct_stock' if rs in STOCK_LOCS and tot > 0
+               else 'no_cost' if rs in STOCK_LOCS
+               else 'hidden_lot' if cls else 'no_cost')
+        at, fr = get_area(pn, so)
+        rt = 'Loan' if rs == 43 else 'Demo'
+        tr = pn if year == 2025 else (so or pn)
+        rows.append(dict(
+            transfer=tr, status=pk['state'], customer=(so if year==2025 else ''),
+            cost_lines=cls, total_cost=tot, cost_type=ct,
+            note=f'48h window before RTI {rd.strftime("%Y-%m-%d") if rd else ""}',
+            rti_date=rd.strftime('%Y-%m-%d') if rd else '',
+            rti_src=rs, responsible=fr, project='General',
+            rti_picking=pn, request_type=rt, area=at, form_requester=fr, year=year
+        ))
+    return rows
+
+def proc_pool():
+    ibp = {}
+    for m in int_pool:
+        ibp.setdefault(m['picking_name'], []).append(m)
+    rows = []
+    for pn, mvs in ibp.items():
+        if pn in all_exc: continue
+        cls = []
+        for mv in mvs:
+            pid = mv['product_id']; pr = products.get(pid, {})
+            nm = pr.get('name',''); p = get_price(pid); qty = mv['qty_done']
+            if is_eng_tool(nm) or not p: continue
+            cls.append(dict(picking=pn, product_id=pid, product_name=nm,
+                            default_code=pr.get('default_code','?') or '?',
+                            lot='', qty=qty, unit_price=p,
+                            line_cost=round(qty*p,4), location_origin='WH/IM/Stock'))
+        tot = round(sum(c['line_cost'] for c in cls), 2)
+        yr  = int(mvs[0]['date'][:4]) if mvs and mvs[0].get('date') else 2026
+        rows.append(dict(transfer=pn, status='done', customer='',
+                         cost_lines=cls, total_cost=tot,
+                         cost_type='hidden_lot' if tot>0 else 'no_cost',
+                         note='', area='', year=yr))
+    return rows
+
+def proc_ep():
+    rows = []
+    for pk in eng_pm_raw:
+        pn = pk['picking_name']
+        if pn in all_exc: continue
+        area = pk['area']; yr = pk['year']
+        rd   = pdate(pk['date_done'])
+        cls  = []
+        for mv in pk['moves']:
+            pid = mv['product_id']; pr = products.get(pid, {})
+            nm = pr.get('name',''); p = get_price(pid); qty = mv['qty_done']
+            if is_eng_tool(nm) or not p: continue
+            cls.append(dict(picking=pn, product_id=pid, product_name=nm,
+                            default_code=pr.get('default_code','?') or '?',
                             lot=mv.get('lot_name',''), qty=qty, unit_price=p,
                             line_cost=round(qty*p,4), location_origin='WH/IM/Stock'))
         tot = round(sum(c['line_cost'] for c in cls), 2)
@@ -482,50 +582,6 @@ function buildCharts(rows,ir){
 function buildKPIs(rows,ir){
   const iT=ir.reduce((s,r)=>s+r.total_cost,0),sT=rows.reduce((s,r)=>s+r.total_cost,0);
   const kpis=[{l:'Grand Total',v:fmt(sT+iT),s:rows.length+' SOs + '+ir.length+' INTs',c:''},{l:'SOs con coste',v:fmt(sT),s:rows.filter(r=>r.total_cost>0).length+' de '+rows.length,c:'g'},{l:'INTs con coste',v:fmt(iT),s:ir.filter(r=>r.total_cost>0).length+' de '+ir.length,c:'a'},{l:'SOs sin coste',v:rows.filter(r=>r.total_cost===0).length,s:'Pool ya tenia material',c:'p'}];
-  const g=sel('kpi-grid');g.innerHTML='';
-  kpis.forEach(k=>{const d=document.createElement('div');d.className='kpi '+k.c;d.innerHTML='<div class="kpi-lbl">'+k.l+'</div><div class="kpi-val">'+k.v+'</div><div class="kpi-sub">'+k.s+'</div>';g.appendChild(d);});
-  sel('so-foot').textContent=fmt(sT);sel('grand-foot').textContent=fmt(sT+iT);
-}
-function matTags(cls){
-  if(!cls||!cls.length)return '<span style="color:var(--gy);font-size:11px">--</span>';
-  const mp={};cls.forEach(l=>{mp[l.default_code]=(mp[l.default_code]||0)+(l.qty||1);});
-  const it=Object.entries(mp),MAX=5;
-  let h=it.slice(0,MAX).map(([c,q])=>'<span class="mtag">'+c+' x'+q+'</span>').join('');
-  if(it.length>MAX)h+='<span style="font-size:10px;color:var(--gy)">+'+(it.length-MAX)+' mas</span>';
-  return h;
-}
-function buildSOTable(rows){
-  const tb=sel('so-tbody');tb.innerHTML='';sel('so-badge').textContent=rows.length+' SOs';
-  rows.forEach((r,i)=>{
-    const cls=r.cost_lines||[],hasL=cls.length>0;
-    const tP=r.request_type==='Loan'?'<span class="pill p-loan">Loan</span>':'<span class="pill p-demo">Demo</span>';
-    const cP=r.cost_type==='direct_stock'?'<span class="pill p-dir">Direct</span>':r.cost_type==='hidden_lot'?'<span class="pill p-hid">Hidden</span>':'<span class="pill p-zer">Sin coste</span>';
-    const ac=AREA_CLS[r.area]||'p-zer',xb=hasL?'<button class="xbtn" onclick="tog('+i+')">&#9654;</button>':'';
-    const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+xb+'</td><td style="font-weight:600;font-family:monospace;font-size:12px">'+r.transfer+'</td><td style="font-size:11px">'+r.form_requester+'</td><td><span class="pill '+ac+'">'+r.area+'</span></td><td>'+tP+'</td><td>'+fmtD(r.rti_date||'')+'</td><td>'+cP+'</td><td>'+matTags(cls)+'</td><td class="cr '+(r.total_cost===0?'zero':'')+'">'+fmt(r.total_cost)+'</td>';
-    tb.appendChild(tr);
-    if(hasL){
-      const ints=[...new Set(cls.map(l=>l.picking))];
-      const pR=cls.map(l=>'<div class="prd-row"><span class="prd-code">'+l.default_code+'</span><span style="color:var(--gy)">'+l.product_name+'</span><span style="text-align:center">'+l.qty+'x</span><span style="color:var(--gy)">'+fmt(l.unit_price)+'</span><span class="prd-tot">'+fmt(l.line_cost)+'</span></div>').join('');
-      const dt=document.createElement('tr');dt.className='det-row';dt.id='det-'+i;
-      dt.innerHTML='<td colspan="9"><div class="det-inner"><div class="det-info"><div>SO: <b>'+r.transfer+'</b></div><div>RTI: <b>'+(r.rti_picking||'--')+'</b> | '+fmtD(r.rti_date||'')+'</div><div>INT: <b>'+ints.join(', ')+'</b></div><div>Solicitante: <b>'+r.form_requester+'</b> | '+r.area+'</div></div><div class="prd-hdr" style="margin-top:8px"><span>Codigo</span><span>Producto</span><span>Cant</span><span>Precio unit</span><span style="text-align:right">Total</span></div>'+pR+'<div class="det-sum"><span>Total: <b>'+fmt(r.total_cost)+'</b></span><span>INT: <b>'+ints.join(', ')+'</b></span></div></div></td>';
-      tb.appendChild(dt);
-    }
-  });
-}
-function buildINTTable(ir){
-  const tb=sel('int-tbody');tb.innerHTML='';sel('int-badge').textContent=ir.length+' INTs';let tot=0;
-  ir.forEach(function(r){
-    const i=ALL_INT.indexOf(r);tot+=r.total_cost;const hasL=r.cost_lines&&r.cost_lines.length>0;
-    const xb=hasL?'<button class="xbtn" data-i="'+i+'" onclick="togI(this.dataset.i)">&#9654;</button>':'';
-    const area=r.area||'--',ac=AREA_CLS[area]||'p-int';
-    const ctCls=r.cost_type==='direct_stock'?'p-dir':r.cost_type==='hidden_lot'?'p-hid':'p-zer';
-    const ctLbl=r.cost_type==='direct_stock'?'Directo':r.cost_type==='hidden_lot'?'Hidden':'Sin coste';
-    const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+xb+'</td><td style="font-weight:600;font-family:monospace;font-size:12px">'+r.transfer+'</td><td style="font-size:11px;color:var(--gy)">'+(r.customer||r.note||'--')+'</td><td><span class="pill '+ac+'">'+area+'</span></td><td><span class="pill '+ctCls+'">'+ctLbl+'</span></td><td class="cr'+(r.total_cost===0?' zero':'')+'">'+fmt(r.total_cost)+'</td>';
-    tb.appendChild(tr);
-    if(hasL){
-      const pR=(r.cost_lines||[]).filter(l=>(l.line_cost||0)>0).map(l=>'<div class="prd-row"><span class="prd-code">'+(l.default_code||'')+'</span><span style="color:var(--gy)">'+(l.product_name||'')+'</span><span style="text-align:center">'+(l.qty||1)+'x</span><span style="color:var(--gy)">'+fotal_cost>0).length+' de '+ir.length,c:'a'},{l:'SOs sin coste',v:rows.filter(r=>r.total_cost===0).length,s:'Pool ya tenia material',c:'p'}];
   const g=sel('kpi-grid');g.innerHTML='';
   kpis.forEach(k=>{const d=document.createElement('div');d.className='kpi '+k.c;d.innerHTML='<div class="kpi-lbl">'+k.l+'</div><div class="kpi-val">'+k.v+'</div><div class="kpi-sub">'+k.s+'</div>';g.appendChild(d);});
   sel('so-foot').textContent=fmt(sT);sel('grand-foot').textContent=fmt(sT+iT);
