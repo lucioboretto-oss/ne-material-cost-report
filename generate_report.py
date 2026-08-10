@@ -248,6 +248,7 @@ print('Step 4: Engineering/PM pickings...')
 ep_dest = list(ENG_LOCS | PM_LOCS)
 ep_pks_raw = sr('stock.picking', [
     ['location_dest_id', 'in', ep_dest], ['state', '=', 'done']
+    ['date_done', '>=', '2025-01-01']
 ], pk_fields, limit=500)
 
 ep_ml_raw = []
@@ -420,7 +421,7 @@ def proc_ep():
 print('Processing...')
 sr25 = proc_rti(rti25, 2025)
 sr26 = proc_rti(rti26, 2026)
-ir   = proc_pool()
+ir   = []   # Pool INTs already attributed to SOs via 48h window — no double-count
 ep   = proc_ep()
 
 gs = round(sum(r['total_cost'] for r in sr25 + sr26), 2)
