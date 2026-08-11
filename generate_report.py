@@ -143,11 +143,13 @@ all_src = list(POOL_LOCS | STOCK_LOCS)
 
 rti25_raw = sr('stock.picking', [
     ['location_id', 'in', all_src], ['state', '=', 'done'],
+    ['name', 'like', 'RTI/%'],
     ['date_done', '>=', '2025-01-01'], ['date_done', '<', '2026-01-01']
 ], pk_fields)
 
 rti26_raw = sr('stock.picking', [
     ['location_id', 'in', all_src], ['state', '=', 'done'],
+    ['name', 'like', 'RTI/%'],
     ['date_done', '>=', '2026-01-01']
 ], pk_fields)
 
