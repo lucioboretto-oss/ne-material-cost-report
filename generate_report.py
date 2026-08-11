@@ -247,7 +247,7 @@ print(f'  {len(int_pool)} pool INT moves')
 print('Step 4: Engineering/PM pickings...')
 ep_dest = list(ENG_LOCS | PM_LOCS)
 ep_pks_raw = sr('stock.picking', [
-    ['location_dest_id', 'in', ep_dest], ['state', '=', 'done']
+    ['location_dest_id', 'in', ep_dest], ['state', '=', 'done'],
     ['date_done', '>=', '2025-01-01']
 ], pk_fields, limit=500)
 
