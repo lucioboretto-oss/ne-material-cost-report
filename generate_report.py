@@ -250,6 +250,8 @@ print('Step 4: Engineering/PM pickings...')
 ep_dest = list(ENG_LOCS | PM_LOCS)
 ep_pks_raw = sr('stock.picking', [
     ['location_dest_id', 'in', ep_dest], ['state', '=', 'done'],
+    ['name', 'like', 'INT/%'],
+    ['location_id', 'in', list(STOCK_LOCS)],
     ['date_done', '>=', '2025-01-01']
 ], pk_fields, limit=500)
 
@@ -323,6 +325,9 @@ ibl = {}  # lot_id → [INT pool moves]
 for m in int_pool:
     ibl.setdefault(m['lot_id'], []).append(m)
 
+# Track (picking_id, lot_id) pairs attributed to RTI via 48h window
+_used_int_pairs = set()
+
 def proc_rti(rti_list, year):
     rows = []
     for pk in rti_list:
@@ -352,6 +357,7 @@ def proc_rti(rti_list, year):
                     bn = ip_pk_names.get(b['picking_id'], b.get('picking_name','INT'))
                     if bn not in all_exc:
                         cl['picking'] = bn; cls.append(cl)
+                        _used_int_pairs.add((b['picking_id'], lid))
         tot = round(sum(c['line_cost'] for c in cls), 2)
         ct  = ('direct_stock' if rs in STOCK_LOCS and tot > 0
                else 'no_cost' if rs in STOCK_LOCS
@@ -370,8 +376,11 @@ def proc_rti(rti_list, year):
     return rows
 
 def proc_pool():
+    """Pool INT moves NOT attributed to any RTI via 48h window."""
     ibp = {}
     for m in int_pool:
+        if (m['picking_id'], m['lot_id']) in _used_int_pairs:
+            continue
         ibp.setdefault(m['picking_name'], []).append(m)
     rows = []
     for pn, mvs in ibp.items():
@@ -423,7 +432,7 @@ def proc_ep():
 print('Processing...')
 sr25 = proc_rti(rti25, 2025)
 sr26 = proc_rti(rti26, 2026)
-ir   = []   # Pool INTs already attributed to SOs via 48h window — no double-count
+ir   = proc_pool()  # Pool INTs not yet attributed to RTI (outstanding demos/loans)
 ep   = proc_ep()
 
 gs = round(sum(r['total_cost'] for r in sr25 + sr26), 2)
