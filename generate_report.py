@@ -210,8 +210,14 @@ def pk_dict(pk):
         'moves':        moves_by_pk.get(pk['id'], [])
     }
 
-rti25 = [pk_dict(p) for p in rti25_raw]
-rti26 = [pk_dict(p) for p in rti26_raw]
+# Filter to known demo/loan RTIs only — excludes regular sales returns (RMAs)
+def is_demo_loan(pk):
+    so = (pk.get('origin') or '').strip()
+    pn = pk.get('name', '')
+    return bool(SO_AREA_MAP.get(so) or SO_AREA_MAP.get(pn))
+
+rti25 = [pk_dict(p) for p in rti25_raw if is_demo_loan(p)]
+rti26 = [pk_dict(p) for p in rti26_raw if is_demo_loan(p)]
 
 # ── STEP 3 — INT pool moves (48h candidates) ──────────────────────────────────
 print('Step 3: INT pool moves...')
