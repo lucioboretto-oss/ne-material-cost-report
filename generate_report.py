@@ -12,7 +12,8 @@ Usage:
   python generate_report.py
 """
 
-import os, json, datetime
+import os, json, datetime, re
+import urllib.request, csv as _csv, io as _io
 import xmlrpc.client
 
 # ── Odoo connection ───────────────────────────────────────────────────────────
@@ -112,6 +113,89 @@ PRICES_FB = {378:559.27465,2021:0.38294,5440:65.1792,2947:0.6786,201:3.84923,
  2380:0.85925,2020:0.19882,2022:0.29175,2453:0.15,6111:85.52783}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+# -- Step 0: F-373 Material Request (Responses) -------------------------
+# F-373 Google Sheet is the authoritative source for which pickings to include.
+# SETUP: In Google Sheets, File -> Share -> Publish to web ->
+#        "Form Responses 1" -> CSV -> Publish. Paste URL in F373_CSV_URL.
+F373_SHEET_ID = '1j3mw3XniYqRw06S09f0HTPVu9FgsA2pUUJa4KSGna5k'
+F373_CSV_URL  = (
+    f'https://docs.google.com/spreadsheets/d/{F373_SHEET_ID}'
+    '/pub?output=csv'
+)
+
+def _load_f373():
+    try:
+        resp = urllib.request.urlopen(F373_CSV_URL, timeout=30)
+        text = resp.read().decode('utf-8')
+    except Exception as e:
+        print(f'  WARNING: Could not load F-373 ({e}). Using static SO_AREA_MAP.')
+        return {}, {}, set(), set()
+    rows = list(_csv.reader(_io.StringIO(text)))
+    if not rows:
+        return {}, {}, set(), set()
+    headers = rows[0]
+    def ci(kw):
+        for i, h in enumerate(headers):
+            if kw.lower() in h.lower(): return i
+        return -1
+    STATUS_COL   = ci('Status')
+    TRANSFER_COL = ci('Transfer')
+    REQ_COL      = ci('Requester')
+    TYPE_COL     = ci('Type of Request')
+    CUST_COL     = ci('Customer name')
+    def _norm_area(cust, type_req):
+        c = cust.lower().strip()
+        if 'engineering' in c or 'systems' in c: return 'Engineering'
+        if 'product' in c:                        return 'Product'
+        if 'brain model' in c:                    return 'Brain Modeling'
+        if 'customer support' in c or c in ('cs',): return 'Customer Support'
+        if 'franco conte' in c:                   return 'Customer Support'
+        if 'software' in c:                       return 'Engineering'
+        if 'sales' in c or 'marketing' in c:      return 'Sales'
+        if type_req == 'External':                return 'Sales'
+        return 'Sales'
+    _range_pat = re.compile(r'INT/(\d+)\s*[-–]\s*INT/(\d+)')
+    _int_pat   = re.compile(r'INT/(\d+)')
+    _so_pat    = re.compile(r'SO\d{8}-\d{4}')
+    def _parse_transfers(text):
+        picks, no_ranges = [], text
+        for m in _range_pat.finditer(text):
+            for n in range(int(m.group(1)), int(m.group(2)) + 1):
+                picks.append(f'INT/{n}')
+            no_ranges = no_ranges.replace(m.group(0), '')
+        for m in _int_pat.finditer(no_ranges):
+            picks.append(f'INT/{m.group(1)}')
+        for m in _so_pat.finditer(text):
+            picks.append(m.group(0))
+        return picks
+    area_map, req_map, auth_int, auth_so = {}, {}, set(), set()
+    for row in rows[1:]:
+        if len(row) <= max(STATUS_COL, TRANSFER_COL, REQ_COL, TYPE_COL, CUST_COL):
+            continue
+        status = row[STATUS_COL].strip().lower()
+        if 'cancel' in status:
+            continue
+        transfer  = row[TRANSFER_COL]
+        requester = row[REQ_COL]
+        type_req  = row[TYPE_COL]
+        cust      = row[CUST_COL]
+        area      = _norm_area(cust, type_req)
+        for p in _parse_transfers(transfer):
+            if p.startswith('INT/'):
+                auth_int.add(p)
+                area_map.setdefault(p, area)
+                req_map.setdefault(p, requester)
+            elif p.startswith('SO'):
+                auth_so.add(p)
+                area_map.setdefault(p, area)
+                req_map.setdefault(p, requester)
+    print(f'  F-373: {len(auth_int)} authorized INTs, {len(auth_so)} authorized SOs')
+    return area_map, req_map, auth_int, auth_so
+
+print('Step 0: Loading F-373 authorized movements...')
+F373_AREA, F373_REQ, AUTHORIZED_INT, AUTHORIZED_SO = _load_f373()
+
+
 def pdate(s):
     if not s: return None
     for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d'):
@@ -131,6 +215,9 @@ def is_eng_tool(name):
     return any(e in (name or '').lower() for e in EXCLUDE_PRODUCTS)
 
 def get_area(rtin, so):
+    for key in [so, rtin]:
+        if key and F373_AREA.get(key):
+            return F373_AREA[key], F373_REQ.get(key, '—')
     for key in [so, rtin]:
         if key and SO_AREA_MAP.get(key):
             return SO_AREA_MAP[key], '—'
@@ -214,7 +301,8 @@ def pk_dict(pk):
 def is_demo_loan(pk):
     so = (pk.get('origin') or '').strip()
     pn = pk.get('name', '')
-    return bool(SO_AREA_MAP.get(so) or SO_AREA_MAP.get(pn))
+    return (so in AUTHORIZED_SO or pn in AUTHORIZED_SO or
+            so in SO_AREA_MAP   or pn in SO_AREA_MAP)
 
 rti25 = [pk_dict(p) for p in rti25_raw if is_demo_loan(p)]
 rti26 = [pk_dict(p) for p in rti26_raw if is_demo_loan(p)]
@@ -387,6 +475,8 @@ def proc_pool():
     for m in int_pool:
         if (m['picking_id'], m['lot_id']) in _used_int_pairs:
             continue
+        if m['picking_name'] not in AUTHORIZED_INT:
+            continue
         ibp.setdefault(m['picking_name'], []).append(m)
     rows = []
     for pn, mvs in ibp.items():
@@ -412,8 +502,11 @@ def proc_ep():
     rows = []
     for pk in eng_pm_raw:
         pn = pk['picking_name']
+        if pn not in AUTHORIZED_INT:  # F-373 filter
+            continue
         if pn in all_exc: continue
-        area = pk['area']; yr = pk['year']
+        area = F373_AREA.get(pn) or pk['area']
+        yr = pk['year']
         rd   = pdate(pk['date_done'])
         cls  = []
         for mv in pk['moves']:
