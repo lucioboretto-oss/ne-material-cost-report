@@ -117,10 +117,10 @@ PRICES_FB = {378:559.27465,2021:0.38294,5440:65.1792,2947:0.6786,201:3.84923,
 # F-373 Google Sheet is the authoritative source for which pickings to include.
 # SETUP: In Google Sheets, File -> Share -> Publish to web ->
 #        "Form Responses 1" -> CSV -> Publish. Paste URL in F373_CSV_URL.
-F373_SHEET_ID = '1j3mw3XniYqRw06S09f0HTPVu9FgsA2pUUJa4KSGna5k'
-F373_CSV_URL  = (
-    f'https://docs.google.com/spreadsheets/d/{F373_SHEET_ID}'
-    '/pub?output=csv'
+F373_CSV_URL = (
+    'https://docs.google.com/spreadsheets/d/e/'
+    '2PACX-1vQsisOMImzuz1r9m2zvBtLbjzWNns6dmrIAuRgt6TaDUkEiRDqi3CpARIYFlIgS6ZjQHsDAUjRPAwta'
+    '/pub?gid=1551132586&single=true&output=csv'
 )
 
 def _load_f373():
