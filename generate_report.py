@@ -124,12 +124,21 @@ F373_CSV_URL = (
 )
 
 def _load_f373():
-    try:
-        resp = urllib.request.urlopen(F373_CSV_URL, timeout=30)
-        text = resp.read().decode('utf-8')
-    except Exception as e:
-        print(f'  WARNING: Could not load F-373 ({e}). Using static SO_AREA_MAP.')
-        return {}, {}, set(), set()
+    text = None
+    # Try local file first (committed to repo as f373.csv)
+    local_path = os.path.join(os.path.dirname(__file__), 'f373.csv')
+    if os.path.exists(local_path):
+        with open(local_path, encoding='utf-8') as fh:
+            text = fh.read()
+        print(f'  F-373: loaded from local f373.csv')
+    else:
+        try:
+            resp = urllib.request.urlopen(F373_CSV_URL, timeout=30)
+            text = resp.read().decode('utf-8')
+            print(f'  F-373: loaded from URL')
+        except Exception as e:
+            print(f'  WARNING: Could not load F-373 ({e}). Using static SO_AREA_MAP.')
+            return {}, {}, set(), set()
     rows = list(_csv.reader(_io.StringIO(text)))
     if not rows:
         return {}, {}, set(), set()
